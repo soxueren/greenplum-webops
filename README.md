@@ -1,2 +1,1 @@
-# gleenplum-MLOps
 # gleenplum-webops
