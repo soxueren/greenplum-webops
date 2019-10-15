@@ -4,6 +4,7 @@ Greenplum WebOps center for greenplum cluster
 
 ## Overview
 
+![image](./static/greenplum-cluster.png)
 
 ## Features
 
