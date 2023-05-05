@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,8 +17,6 @@ import (
 	"bytes"
 	"encoding/base32"
 	"encoding/binary"
-
-	"golang.org/x/crypto/ed25519"
 )
 
 // PrefixByte is a lead byte representing the type.
@@ -46,8 +44,11 @@ const (
 	// PrefixByteUser is the version byte used for encoded NATS Users
 	PrefixByteUser PrefixByte = 20 << 3 // Base32-encodes to 'U...'
 
+	// PrefixByteCurve is the version byte used for encoded CurveKeys (X25519)
+	PrefixByteCurve PrefixByte = 23 << 3 // Base32-encodes to 'X...'
+
 	// PrefixByteUnknown is for unknown prefixes.
-	PrefixByteUknown PrefixByte = 23 << 3 // Base32-encodes to 'X...'
+	PrefixByteUnknown PrefixByte = 25 << 3 // Base32-encodes to 'Z...'
 )
 
 // Set our encoding to not include padding '=='
@@ -84,12 +85,13 @@ func Encode(prefix PrefixByte, src []byte) ([]byte, error) {
 }
 
 // EncodeSeed will encode a raw key with the prefix and then seed prefix and crc16 and then base32 encoded.
+// `src` must be 32 bytes long (ed25519.SeedSize).
 func EncodeSeed(public PrefixByte, src []byte) ([]byte, error) {
 	if err := checkValidPublicPrefixByte(public); err != nil {
 		return nil, err
 	}
 
-	if len(src) != ed25519.SeedSize {
+	if len(src) != seedLen {
 		return nil, ErrInvalidSeedLen
 	}
 
@@ -162,7 +164,8 @@ func Decode(expectedPrefix PrefixByte, src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if prefix := PrefixByte(raw[0]); prefix != expectedPrefix {
+	b1 := raw[0] & 248 // 248 = 11111000
+	if prefix := PrefixByte(b1); prefix != expectedPrefix {
 		return nil, ErrInvalidPrefixByte
 	}
 	return raw[1:], nil
@@ -188,10 +191,11 @@ func DecodeSeed(src []byte) (PrefixByte, []byte, error) {
 	return PrefixByte(b2), raw[2:], nil
 }
 
+// Prefix returns PrefixBytes of its input
 func Prefix(src string) PrefixByte {
 	b, err := decode([]byte(src))
 	if err != nil {
-		return PrefixByteUknown
+		return PrefixByteUnknown
 	}
 	prefix := PrefixByte(b[0])
 	err = checkValidPrefixByte(prefix)
@@ -203,7 +207,7 @@ func Prefix(src string) PrefixByte {
 	if PrefixByte(b1) == PrefixByteSeed {
 		return PrefixByteSeed
 	}
-	return PrefixByteUknown
+	return PrefixByteUnknown
 }
 
 // IsValidPublicKey will decode and verify that the string is a valid encoded public key.
@@ -248,12 +252,18 @@ func IsValidPublicOperatorKey(src string) bool {
 	return err == nil
 }
 
+// IsValidPublicCurveKey will decode and verify the string is a valid encoded Public Curve Key.
+func IsValidPublicCurveKey(src string) bool {
+	_, err := Decode(PrefixByteCurve, []byte(src))
+	return err == nil
+}
+
 // checkValidPrefixByte returns an error if the provided value
 // is not one of the defined valid prefix byte constants.
 func checkValidPrefixByte(prefix PrefixByte) error {
 	switch prefix {
 	case PrefixByteOperator, PrefixByteServer, PrefixByteCluster,
-		PrefixByteAccount, PrefixByteUser, PrefixByteSeed, PrefixBytePrivate:
+		PrefixByteAccount, PrefixByteUser, PrefixByteSeed, PrefixBytePrivate, PrefixByteCurve:
 		return nil
 	}
 	return ErrInvalidPrefixByte
@@ -263,7 +273,7 @@ func checkValidPrefixByte(prefix PrefixByte) error {
 // is not one of the public defined valid prefix byte constants.
 func checkValidPublicPrefixByte(prefix PrefixByte) error {
 	switch prefix {
-	case PrefixByteServer, PrefixByteCluster, PrefixByteOperator, PrefixByteAccount, PrefixByteUser:
+	case PrefixByteOperator, PrefixByteServer, PrefixByteCluster, PrefixByteAccount, PrefixByteUser, PrefixByteCurve:
 		return nil
 	}
 	return ErrInvalidPrefixByte
@@ -285,6 +295,24 @@ func (p PrefixByte) String() string {
 		return "seed"
 	case PrefixBytePrivate:
 		return "private"
+	case PrefixByteCurve:
+		return "x25519"
 	}
 	return "unknown"
+}
+
+// CompatibleKeyPair returns an error if the KeyPair doesn't match expected PrefixByte(s)
+func CompatibleKeyPair(kp KeyPair, expected ...PrefixByte) error {
+	pk, err := kp.PublicKey()
+	if err != nil {
+		return err
+	}
+	pkType := Prefix(pk)
+	for _, k := range expected {
+		if pkType == k {
+			return nil
+		}
+	}
+
+	return ErrIncompatibleKey
 }
